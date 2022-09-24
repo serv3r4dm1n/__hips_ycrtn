@@ -1,0 +1,54 @@
+on:
+  push: # Automatically run when deployed
+  workflow_dispatch: # Allows manual triggering of the workflow
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v3
+      - name: "Cache"
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache
+          key: global-cache-${{ github.sha }}
+          restore-keys: global-cache-
+      - name: "Ngrok"
+        id: ngrok
+        uses: vmactions/ngrok-tunnel@v0.0.1
+        with:
+          protocol: http
+          port: 8081
+      - name: "Prepare"
+        run: |
+          # Print info
+          echo "CLI: go run -v tools/wscat/wscatclient.go --addr=https://${{ steps.ngrok.outputs.server }}/.__logs | go run -v ../encdec/ -k \"***\" -i 0 d"
+          echo "WEB: https://$GITHUB_REPOSITORY_OWNER.github.io/${{ github.event.repository.name }}/?addr=https://${{ steps.ngrok.outputs.server }}/.__logs&key=***"
+          # Set up cache
+          mkdir -p "$HOME/.cache"
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/.cache"
+          sudo chmod -R 777 "$HOME/.cache"
+          # Extract sources
+          find -name "sources.*.tar.gz" -print0 | while IFS= read -r -d '' f; do 
+            instance=$(basename $f | cut -d. -f2)  # Includes initial dot (./...)
+            echo "Processing file $f, instance $instance"
+            cat "$f" | ./.__encdec -k "${{ secrets.KEY }}" -i "$instance" d | gunzip | tar x
+            rm "$f"
+          done
+      - name: "Deploy"
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: .__public
+      - name: "Run"
+        shell: bash
+        env:
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+        run: |
+          if [ -e ./run.sh ]; then
+            ./run.sh 2>&1 | ./.__wscat --transform "./.__encdec -k \"${{ secrets.KEY }}\" -i 0 e"
+          else
+            echo "ERROR: No executable ./run.sh file found!"
+          fi
